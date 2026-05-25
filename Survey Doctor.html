@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Survey Doctor</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: 'Malgun Gothic', sans-serif; background:#f4f6f9; margin:0; padding:24px; display:flex; justify-content:center; }
+    .container { max-width:860px; width:100%; background:#fff; padding:32px; border-radius:16px; box-shadow:0 8px 24px rgba(0,0,0,.08); }
+    h1 { text-align:center; color:#263238; margin:0 0 8px; }
+    .subtitle { text-align:center; color:#78909c; margin-bottom:28px; }
+    .tabs { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:18px; }
+    button { padding:12px 18px; border:0; border-radius:10px; font-size:15px; cursor:pointer; background:#3498db; color:#fff; }
+    button:hover { background:#2980b9; }
+    button:disabled { background:#b0bec5; cursor:not-allowed; }
+    .tab-btn { background:#eef3f7; color:#34495e; }
+    .tab-btn.active { background:#3498db; color:#fff; }
+    .input-section { display:none; margin:16px 0; }
+    .input-section.active { display:block; }
+    input[type="text"], textarea, input[type="file"] { width:100%; box-sizing:border-box; padding:13px; border:1px solid #dce3e8; border-radius:10px; font-size:15px; }
+    textarea { min-height:190px; resize:vertical; line-height:1.6; }
+    .help { color:#78909c; font-size:13px; margin-top:8px; }
+    .submit-wrap { text-align:center; margin-top:22px; }
+    .loading { display:none; text-align:center; margin:22px 0; font-weight:bold; color:#e67e22; }
+    .result-box, .error-box, .fallback-box { display:none; margin-top:24px; padding:22px; border-radius:12px; line-height:1.6; }
+    .result-box { background:#fbfcfd; border-left:6px solid #2ecc71; }
+    .error-box { background:#fdecec; color:#c0392b; border-left:6px solid #e74c3c; }
+    .fallback-box { background:#fff8e1; color:#7a5d00; border-left:6px solid #f1c40f; }
+    .score-wrap { display:flex; align-items:flex-end; gap:12px; margin:10px 0 18px; }
+    .score { font-size:48px; font-weight:800; color:#27ae60; line-height:1; }
+    .score-label { color:#78909c; padding-bottom:6px; }
+    .summary { background:#fff; border:1px solid #eef2f4; padding:14px; border-radius:10px; margin-bottom:18px; }
+    .bar-item { margin:14px 0; }
+    .bar-head { display:flex; justify-content:space-between; font-weight:bold; margin-bottom:6px; color:#37474f; }
+    .bar-bg { height:12px; background:#e9eef2; border-radius:999px; overflow:hidden; }
+    .bar-fill { height:100%; background:#3498db; border-radius:999px; }
+    .details { display:grid; gap:12px; margin-top:18px; }
+    .detail-card { background:#fff; border:1px solid #edf1f4; border-radius:12px; padding:14px; }
+    .detail-type { font-weight:bold; color:#2c3e50; margin-bottom:6px; }
+    .fallback-actions { margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; }
+    .secondary { background:#607d8b; }
+    .secondary:hover { background:#455a64; }
+  </style>
+</head>
+
+<body>
+<div class="container">
+  <h1>🩺 Survey Doctor</h1>
+  <p class="subtitle">설문 링크, 엑셀 파일, 텍스트를 기반으로 AI가 설문 품질을 진단합니다.</p>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="changeTab('url')">① 링크 입력</button>
+    <button class="tab-btn" onclick="changeTab('file')">② 파일 업로드</button>
+    <button class="tab-btn" onclick="changeTab('text')">③ 텍스트 붙여넣기</button>
+  </div>
+
+  <div id="urlSection" class="input-section active">
+    <input type="text" id="surveyUrl" placeholder="네이버폼, 구글폼 등 설문 링크를 입력하세요">
+    <div class="help">로그인/보안이 필요한 설문은 자동 분석이 제한될 수 있습니다.</div>
+  </div>
+
+  <div id="fileSection" class="input-section">
+    <input type="file" id="surveyFile" accept=".xlsx,.xls,.csv,.txt">
+    <div class="help">엑셀, CSV, TXT 파일을 지원합니다.</div>
+  </div>
+
+  <div id="textSection" class="input-section">
+    <textarea id="surveyText" placeholder="설문 문항을 복사해서 붙여넣어 주세요."></textarea>
+  </div>
+
+  <div class="submit-wrap">
+    <button id="btnSubmit" onclick="startDiagnosis()">진단 시작</button>
+  </div>
+
+  <div id="loadingStatus" class="loading">🔄 AI가 설문지를 분석 중입니다...</div>
+  <div id="fallbackArea" class="fallback-box"></div>
+  <div id="resultArea" class="result-box"></div>
+  <div id="errorArea" class="error-box"></div>
+</div>
+
+<script>
+  const BACKEND_API_URL = "https://script.google.com/macros/s/AKfycbx-h_HjaFVCxhy7RZb6hHh3Oe_YanUcExNnKOEyFwiCmddlISbGSoXfyagP2VbsehcJwQ/exec";
+  let currentTab = "url";
+
+  const SCORE_META = {
+    clarity: { label: "문항 명확성", max: 25 },
+    options: { label: "선택지 품질", max: 25 },
+    structure: { label: "설문 흐름/구조", max: 20 },
+    burden: { label: "응답 부담", max: 15 },
+    analysis: { label: "분석 가능성", max: 15 }
+  };
+
+  function changeTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.remove("active"));
+    document.querySelectorAll(".input-section").forEach(section => section.classList.remove("active"));
+
+    const tabIndex = tab === "url" ? 0 : tab === "file" ? 1 : 2;
+    document.querySelectorAll(".tab-btn")[tabIndex].classList.add("active");
+    document.getElementById(tab + "Section").classList.add("active");
+    clearMessages();
+  }
+
+  function clearMessages() {
+    ["resultArea", "errorArea", "fallbackArea"].forEach(id => {
+      document.getElementById(id).style.display = "none";
+    });
+  }
+
+  async function startDiagnosis() {
+    const btn = document.getElementById("btnSubmit");
+    const loading = document.getElementById("loadingStatus");
+
+    clearMessages();
+    btn.disabled = true;
+    loading.style.display = "block";
+
+    try {
+      const payload = await buildPayload();
+
+      const response = await fetch(BACKEND_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await response.json();
+
+      if (data.status === "success") {
+        renderResult(data.data);
+      } else if (data.status === "fallback_required") {
+        renderFallback(data.message);
+      } else {
+        throw new Error(data.message || "진단 중 오류가 발생했습니다.");
+      }
+
+    } catch (error) {
+      renderError(error.message);
+    } finally {
+      btn.disabled = false;
+      loading.style.display = "none";
+    }
+  }
+
+  async function buildPayload() {
+    if (currentTab === "url") {
+      const url = document.getElementById("surveyUrl").value.trim();
+      if (!url) throw new Error("설문 링크를 입력해 주세요.");
+      return { inputType: "url", surveyUrl: url };
+    }
+
+    if (currentTab === "text") {
+      const text = document.getElementById("surveyText").value.trim();
+      if (!text) throw new Error("설문 내용을 붙여넣어 주세요.");
+      return { inputType: "text", surveyContent: text };
+    }
+
+    if (currentTab === "file") {
+      const file = document.getElementById("surveyFile").files[0];
+      if (!file) throw new Error("파일을 업로드해 주세요.");
+      const fileText = await readSurveyFile(file);
+      return { inputType: "text", surveyContent: fileText };
+    }
+  }
+
+  function renderResult(data) {
+    const resultArea = document.getElementById("resultArea");
+
+    let html = `
+      <h3>📊 AI 진단 결과 보고서</h3>
+      <div class="score-wrap">
+        <div class="score">${data.score ?? "-"}점</div>
+        <div class="score-label">/ 100점</div>
+      </div>
+      <div class="summary"><b>요약:</b> ${escapeHtml(data.summary || "진단이 완료되었습니다.")}</div>
+      <h4>항목별 점수</h4>
+    `;
+
+    const scores = data.categoryScores || {};
+    Object.keys(SCORE_META).forEach(key => {
+      const meta = SCORE_META[key];
+      const value = Number(scores[key] || 0);
+      const percent = Math.max(0, Math.min(100, (value / meta.max) * 100));
+
+      html += `
+        <div class="bar-item">
+          <div class="bar-head">
+            <span>${meta.label}</span>
+            <span>${value} / ${meta.max}</span>
+          </div>
+          <div class="bar-bg">
+            <div class="bar-fill" style="width:${percent}%"></div>
+          </div>
+        </div>
+      `;
+    });
+
+    html += `<h4>상세 진단</h4><div class="details">`;
+
+    if (data.details && Array.isArray(data.details) && data.details.length > 0) {
+      data.details.forEach(item => {
+        html += `
+          <div class="detail-card">
+            <div class="detail-type">${escapeHtml(item.type || "진단 항목")}</div>
+            <div>${escapeHtml(item.message || "")}</div>
+          </div>
+        `;
+      });
+    } else {
+      html += `<div class="detail-card">상세 진단 내용이 없습니다.</div>`;
+    }
+
+    html += `</div>`;
+
+    resultArea.innerHTML = html;
+    resultArea.style.display = "block";
+  }
+
+  function renderFallback(message) {
+    const fallbackArea = document.getElementById("fallbackArea");
+
+    fallbackArea.innerHTML = `
+      ⚠️ <b>자동 링크 분석이 제한되었습니다.</b><br>
+      ${escapeHtml(message || "설문 내용을 직접 입력해 주세요.")}
+      <div class="fallback-actions">
+        <button class="secondary" onclick="changeTab('text')">텍스트 붙여넣기로 계속</button>
+        <button class="secondary" onclick="changeTab('file')">파일 업로드로 계속</button>
+      </div>
+    `;
+
+    fallbackArea.style.display = "block";
+  }
+
+  function renderError(message) {
+    const errorArea = document.getElementById("errorArea");
+    errorArea.innerHTML = "❌ <b>오류:</b> " + escapeHtml(message);
+    errorArea.style.display = "block";
+  }
+
+  function readSurveyFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      const fileName = file.name.toLowerCase();
+
+      reader.onload = function(e) {
+        try {
+          if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: "array" });
+            let text = "";
+
+            workbook.SheetNames.forEach(sheetName => {
+              const sheet = workbook.Sheets[sheetName];
+              const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+              text += `[시트명: ${sheetName}]\n`;
+
+              rows.forEach(row => {
+                text += row.join(" | ") + "\n";
+              });
+
+              text += "\n";
+            });
+
+            resolve(text);
+          } else {
+            resolve(e.target.result);
+          }
+        } catch (err) {
+          reject(err);
+        }
+      };
+
+      reader.onerror = () => reject(new Error("파일을 읽는 중 오류가 발생했습니다."));
+
+      if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
+        reader.readAsArrayBuffer(file);
+      } else {
+        reader.readAsText(file, "UTF-8");
+      }
+    });
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+</script>
+</body>
+</html>
